@@ -1,0 +1,23 @@
+Package: agent-token-saver
+Version: 0.2.0
+Section: python
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.10), python3-click, python3-rich, python3-tiktoken, python3-yaml
+Maintainer: agent-token-saver contributors <https://github.com/MQ-HZY-For-Cute/agent-token-saver>
+Homepage: https://github.com/MQ-HZY-For-Cute/agent-token-saver
+Description: AI Coding Agent Token Saver
+  Reduces token consumption across multiple AI coding agents (Claude Code,
+  Codex, OpenClaw, Cursor, Aider, Continue, Windsurf) via four strategies:
+  .
+   - Input compression (strip comments, docstrings, skeleton extraction)
+   - Content deduplication (hash-based, SimHash fuzzy matching)
+   - Output minimization (truncation, field omission, compression)
+   - Incremental context (changed files only, path abbreviation)
+  .
+  Provides CLI commands for preprocessing (ats prep), multi-agent adapter
+  management (ats agents), hook management (ats hooks), session tracking
+  (ats sessions), analytics (ats stats), daemon monitoring (ats daemon),
+  and a real-time TUI dashboard (ats tui).
+  .
+  Also supports NPX execution: npx agent-token-saver <command>

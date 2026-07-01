@@ -1,0 +1,16 @@
+# Exclude development and build artifacts from npm package
+.git/
+.github/
+tests/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.agent-token-saver/
+*.db
+*.sqlite
+*.log
+.pytest_cache/
+node_modules/
