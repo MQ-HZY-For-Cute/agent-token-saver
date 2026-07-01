@@ -14,7 +14,6 @@ from claude_token_saver.daemon import (
     PID_FILE,
     LOG_FILE,
     get_daemon_status,
-    _is_pid_alive,
 )
 
 
@@ -32,16 +31,11 @@ def daemon_start(interval: int, port: int, foreground: bool) -> None:
     """启动 Daemon 监控服务。"""
     from claude_token_saver.daemon import start_daemon
 
-    # 检查是否已在运行
-    pid = None
-    if PID_FILE.exists():
-        try:
-            pid = int(PID_FILE.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            pid = None
-
-    if pid and _is_pid_alive(pid):
-        click.echo(click.style(f"⚠️  Daemon 已在运行 (PID: {pid})", fg="yellow"))
+    # 检查是否已在运行（优先 HTTP API，回退 PID 文件）
+    from claude_token_saver.daemon import get_daemon_status
+    status_check = get_daemon_status()
+    if status_check.get("running"):
+        click.echo(click.style(f"⚠️  Daemon 已在运行 (PID: {status_check.get('pid', 'unknown')})", fg="yellow"))
         click.echo("使用 'cts daemon status' 查看状态，'cts daemon stop' 停止")
         return
 
@@ -71,16 +65,11 @@ def daemon_start(interval: int, port: int, foreground: bool) -> None:
 @click.option("--force", is_flag=True, help="强制终止进程")
 def daemon_stop(force: bool) -> None:
     """停止 Daemon 监控服务。"""
-    from claude_token_saver.daemon import stop_daemon
+    from claude_token_saver.daemon import stop_daemon, get_daemon_status
 
-    pid = None
-    if PID_FILE.exists():
-        try:
-            pid = int(PID_FILE.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            pass
-
-    if not pid or not _is_pid_alive(pid):
+    # 优先通过 HTTP API 检测 daemon 是否运行
+    http_status = get_daemon_status()
+    if not http_status.get("running"):
         click.echo(click.style("📭 Daemon 未运行", fg="yellow"))
         # 清理 PID 文件
         try:
@@ -88,6 +77,8 @@ def daemon_stop(force: bool) -> None:
         except OSError:
             pass
         return
+
+    pid = http_status.get("pid")
 
     if force:
         click.echo(f"🔨 强制终止 Daemon (PID: {pid})...")

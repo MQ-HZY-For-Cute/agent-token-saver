@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-token-saver"
-version = "0.2.0"
+version = "0.2.1"
 description = "AI Agent Token Saver - 减少多 Agent 平台 token 消耗的综合工具（支持 Claude Code, Codex, OpenClaw, Cursor, Aider, Continue, Windsurf）"
 readme = "README.md"
 license = { text = "MIT" }

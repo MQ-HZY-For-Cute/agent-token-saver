@@ -1082,10 +1082,9 @@ def get_daemon_status() -> dict[str, Any]:
         - timestamp: 查询时间
     """
     pid = _read_pid_static()
-    running = _is_pid_alive(pid)
 
     result: dict[str, Any] = {
-        "running": running,
+        "running": False,
         "pid": pid,
         "pid_file": str(PID_FILE),
         "log_file": str(LOG_FILE),
@@ -1110,24 +1109,27 @@ def get_daemon_status() -> dict[str, Any]:
     except Exception as e:
         log.debug("读取统计失败: %s", e)
 
-    # 如果正在运行，尝试获取实时状态
-    if running and pid:
-        try:
-            api_token = _get_api_token()
-            if api_token:
-                req_obj = urllib.request.Request(
-                    f"http://127.0.0.1:{HTTP_PORT}/status",
-                    headers={"Authorization": f"Bearer {api_token}"},
-                )
-                req = urllib.request.urlopen(req_obj, timeout=2)
-                data = json.loads(req.read().decode("utf-8"))
-                result["uptime_seconds"] = data.get("uptime_seconds")
-                result["scanner_alive"] = data.get("scanner_alive")
-                result["http_reachable"] = True
-            else:
-                result["http_reachable"] = False
-        except Exception:
+    # 优先通过 HTTP API 检测 daemon 是否运行（PID 文件可能已过时）
+    try:
+        api_token = _get_api_token()
+        if api_token:
+            req_obj = urllib.request.Request(
+                f"http://127.0.0.1:{HTTP_PORT}/status",
+                headers={"Authorization": f"Bearer {api_token}"},
+            )
+            req = urllib.request.urlopen(req_obj, timeout=2)
+            data = json.loads(req.read().decode("utf-8"))
+            result["running"] = True
+            result["pid"] = data.get("pid", result["pid"])
+            result["uptime_seconds"] = data.get("uptime_seconds")
+            result["scanner_alive"] = data.get("scanner_alive")
+            result["http_reachable"] = True
+        else:
             result["http_reachable"] = False
+    except Exception:
+        result["http_reachable"] = False
+        # HTTP 不可达，回退到 PID 检测结果
+        result["running"] = _is_pid_alive(pid)
 
     # 脱敏展示 API token（只读一次磁盘）
     api_token = _get_api_token()
