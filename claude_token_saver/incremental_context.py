@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from claude_token_saver.utils import count_tokens
+
 
 @dataclass
 class SentFileRecord:
@@ -49,11 +51,11 @@ class ContentHashCache:
 
     def record_sent(self, path: str, content: str, turn: int = 0) -> None:
         """记录一个文件已被发送。"""
-        content_hash = hashlib.md5(content.encode()).hexdigest()
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
         self._cache[path] = SentFileRecord(
             path=path,
             content_hash=content_hash,
-            token_count=len(content) // 4,  # 粗略估算
+            token_count=count_tokens(content),
             sent_at_turn=turn,
         )
 
@@ -61,7 +63,7 @@ class ContentHashCache:
         """检查文件内容是否与上次发送时不同。"""
         if path not in self._cache:
             return True
-        new_hash = hashlib.md5(content.encode()).hexdigest()
+        new_hash = hashlib.sha256(content.encode()).hexdigest()
         return self._cache[path].content_hash != new_hash
 
     def get_record(self, path: str) -> SentFileRecord | None:
@@ -112,8 +114,8 @@ def detect_file_changes(
             if read_content_fn:
                 try:
                     content = read_content_fn(fp)
-                    content_hash = hashlib.md5(content.encode()).hexdigest()
-                    tokens = len(content) // 4
+                    content_hash = hashlib.sha256(content.encode()).hexdigest()
+                    tokens = count_tokens(content)
                 except Exception:
                     pass
             changes.append(FileChange(path=fp_str, change_type="new",
@@ -125,7 +127,7 @@ def detect_file_changes(
             if read_content_fn:
                 try:
                     content = read_content_fn(fp)
-                    content_hash = hashlib.md5(content.encode()).hexdigest()
+                    content_hash = hashlib.sha256(content.encode()).hexdigest()
                     content_changed = content_hash != record.content_hash
                 except Exception:
                     content_changed = True
@@ -270,9 +272,9 @@ class IncrementalContextManager:
         for fp in file_paths:
             fp_str = str(fp)
             try:
-                content = read_content_fn(fp) if read_content_fn else ""
-                content_hash = hashlib.md5(content.encode()).hexdigest()
-                tokens = len(content) // 4
+                content = get_content_fn(fp) if get_content_fn else ""
+                content_hash = hashlib.sha256(content.encode()).hexdigest()
+                tokens = count_tokens(content)
                 changes.append(FileChange(path=fp_str, change_type="new",
                                           content_hash=content_hash, tokens=tokens))
                 self.cache.record_sent(fp_str, content, turn=self._turn_counter)

@@ -16,6 +16,7 @@ Agent Token Saver - 对话上下文压缩器
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -68,41 +69,44 @@ class ConversationCompactor:
         self.session_mgr = SessionManager(db_path=self.db_path)
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        """获取数据库连接。"""
+        return sqlite3.connect(self.db_path)
+
     def _init_db(self) -> None:
         """初始化对话摘要表。"""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS turn_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                turn_index INTEGER NOT NULL,
-                turn_type TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                tokens_before INTEGER DEFAULT 0,
-                tokens_after INTEGER DEFAULT 0,
-                tool_calls TEXT DEFAULT '[]',
-                key_decisions TEXT DEFAULT '[]',
-                timestamp TEXT NOT NULL,
-                created_at TEXT NOT NULL
+        with contextlib.closing(self._get_conn()) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS turn_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    turn_type TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    tokens_before INTEGER DEFAULT 0,
+                    tokens_after INTEGER DEFAULT 0,
+                    tool_calls TEXT DEFAULT '[]',
+                    key_decisions TEXT DEFAULT '[]',
+                    timestamp TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS compacted_contexts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    original_turns INTEGER DEFAULT 0,
+                    compacted_turns INTEGER DEFAULT 0,
+                    total_tokens_before INTEGER DEFAULT 0,
+                    total_tokens_after INTEGER DEFAULT 0,
+                    context_data TEXT DEFAULT '{}',
+                    timestamp TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_summaries_session ON turn_summaries(session_id)"
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS compacted_contexts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                original_turns INTEGER DEFAULT 0,
-                compacted_turns INTEGER DEFAULT 0,
-                total_tokens_before INTEGER DEFAULT 0,
-                total_tokens_after INTEGER DEFAULT 0,
-                context_data TEXT DEFAULT '{}',
-                timestamp TEXT NOT NULL
-            )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_summaries_session ON turn_summaries(session_id)"
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
 
     def should_compact(self, session_id: str, total_tokens: int, threshold: int = 100_000) -> bool:
         """判断是否需要触发 compact。"""
@@ -119,17 +123,7 @@ class ConversationCompactor:
         threshold: int = 100_000,
         keep_recent: int = 5,
     ) -> CompactedContext | None:
-        """如果超过阈值则执行 compact。
-
-        Args:
-            session_id: 会话 ID
-            turns: 完整对话轮次列表 [{turn_index, type, content, tokens, ...}, ...]
-            threshold: token 阈值
-            keep_recent: 保留最近几轮的完整内容
-
-        Returns:
-            CompactedContext（如果需要 compact），否则 None
-        """
+        """如果超过阈值则执行 compact。"""
         total_tokens = sum(t.get("tokens", count_tokens(t.get("content", ""))) for t in turns)
 
         if not self.should_compact(session_id, total_tokens, threshold):
@@ -143,16 +137,7 @@ class ConversationCompactor:
         turns: list[dict],
         keep_recent: int = 5,
     ) -> CompactedContext:
-        """执行 compact：将旧轮次压缩为摘要，保留最近 N 轮完整内容。
-
-        Args:
-            session_id: 会话 ID
-            turns: 完整对话轮次列表
-            keep_recent: 保留最近几轮的完整内容
-
-        Returns:
-            CompactedContext
-        """
+        """执行 compact：将旧轮次压缩为摘要，保留最近 N 轮完整内容。"""
         if not turns:
             return CompactedContext(
                 session_id=session_id,
@@ -167,8 +152,9 @@ class ConversationCompactor:
         )
 
         # 分离：最近 N 轮保留完整，旧轮次压缩为摘要
-        recent = turns[-keep_recent:] if len(turns) > keep_recent else turns
-        old_turns = turns[:-keep_recent] if len(turns) > keep_recent else []
+        split_at = max(0, len(turns) - keep_recent) if keep_recent < len(turns) else len(turns)
+        recent = turns[split_at:]
+        old_turns = turns[:split_at]
 
         summaries: list[TurnSummary] = []
         for turn in old_turns:
@@ -176,15 +162,13 @@ class ConversationCompactor:
             tokens = turn.get("tokens", count_tokens(turn.get("content", "")))
             summary_tokens = count_tokens(summary_text)
 
-            # 提取工具调用
             tool_calls = []
             if turn.get("tool_uses"):
                 tool_calls = [t.get("name", "") for t in turn.get("tool_uses", [])]
 
-            # 提取关键决策（从内容中提取第一句话）
             key_decisions = self._extract_key_decisions(turn.get("content", ""))
 
-            summary = TurnSummary(
+            summaries.append(TurnSummary(
                 turn_index=turn.get("turn_index", 0),
                 turn_type=turn.get("type", "user"),
                 summary=summary_text,
@@ -193,8 +177,7 @@ class ConversationCompactor:
                 tool_calls=tool_calls,
                 key_decisions=key_decisions,
                 timestamp=turn.get("timestamp", ""),
-            )
-            summaries.append(summary)
+            ))
 
         # 保存摘要到 DB
         self._save_summaries(session_id, summaries)
@@ -211,10 +194,15 @@ class ConversationCompactor:
         self.session_mgr.update_session(session_id, compacted=True)
 
         # 保存 compacted context
-        self._save_compacted_context(session_id, len(turns), len(summaries) + len(recent),
-                                     total_before, total_after,
-                                     {"summaries": [s.summary for s in summaries],
-                                      "recent_count": len(recent)})
+        self._save_compacted_context(
+            session_id=session_id,
+            original=len(turns),
+            compacted=len(summaries) + len(recent),
+            tokens_before=total_before,
+            tokens_after=total_after,
+            data={"summaries": [s.summary for s in summaries],
+                  "recent_count": len(recent)},
+        )
 
         return CompactedContext(
             session_id=session_id,
@@ -228,13 +216,12 @@ class ConversationCompactor:
 
     def get_compacted_context(self, session_id: str) -> CompactedContext | None:
         """从 DB 恢复压缩后的上下文。"""
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT context_data FROM compacted_contexts "
-            "WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (session_id,)
-        ).fetchone()
-        conn.close()
+        with contextlib.closing(self._get_conn()) as conn:
+            row = conn.execute(
+                "SELECT context_data FROM compacted_contexts "
+                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (session_id,)
+            ).fetchone()
 
         if not row:
             return None
@@ -244,9 +231,7 @@ class ConversationCompactor:
         except (json.JSONDecodeError, TypeError):
             return None
 
-        # 加载摘要
         summaries = self._load_summaries(session_id)
-        recent_count = data.get("recent_count", 0)
 
         return CompactedContext(
             session_id=session_id,
@@ -263,18 +248,19 @@ class ConversationCompactor:
         parts: list[str] = []
         saved = context.total_tokens_before - context.total_tokens_after
         pct = (saved / context.total_tokens_before * 100) if context.total_tokens_before else 0
-        parts.append(f"[摘要 {context.original_turns}→{context.compacted_turns}轮 节省{saved}tok {pct:.0f}%]\n")
+        parts.append(f"[摘要 {context.original_turns}→{context.compacted_turns}轮 节省{saved}tok {pct:.0f}%]")
 
         for s in context.summaries:
-            parts.append(f"T{s.turn_index}{'U' if s.turn_type == 'user' else 'A'}:{s.summary}")
+            line = f"T{s.turn_index}{'U' if s.turn_type == 'user' else 'A'}:{s.summary}"
             if s.tool_calls:
-                parts.append(f"  tools:{','.join(s.tool_calls[:2])}")
+                line += f"  tools:{','.join(s.tool_calls[:2])}"
+            parts.append(line)
 
         if context.recent_turns:
-            parts.append(f"[最近{len(context.recent_turns)}轮]\n")
+            parts.append(f"\n[最近{len(context.recent_turns)}轮]")
             for turn in context.recent_turns:
                 content = turn.get("content", "")[:300]
-                parts.append(f"T{turn.get('turn_index', '?')}{'F'}:{content}")
+                parts.append(f"T{turn.get('turn_index', '?')}F:{content}")
 
         return "\n".join(parts)
 
@@ -297,19 +283,25 @@ class ConversationCompactor:
                 summary += f" | {'; '.join(result_parts[:2])}"
             return summary
 
-        # 纯文本摘要：token 感知截断
+        # 纯文本：在句子边界处智能截断
+        if not content:
+            return "(空)"
+
         max_chars = 80 if turn_type == "user" else 120
-        if len(content) > max_chars:
-            # 尝试在句号处截断，保持语义完整
-            truncated = content[:max_chars]
-            last_period = truncated.rfind("。")
-            last_dot = truncated.rfind(".")
-            last_space = truncated.rfind(" ")
-            break_point = max(last_period, last_dot, last_space)
-            if break_point > max_chars * 0.5:
-                return content[:break_point + 1].rstrip() + "..."
-            return content[:max_chars].rstrip() + "..."
-        return content if content else "(空)"
+        if len(content) <= max_chars:
+            return content
+
+        # 尝试在句号处截断，保持语义完整
+        truncated = content[:max_chars + 1]  # +1 以便检测句号在 max_chars 处
+        candidates = []
+        for marker in ("。", ". ", ".\n", " ", "\n"):
+            pos = truncated.rfind(marker)
+            if pos > max_chars * 0.5:
+                candidates.append(pos)
+
+        if candidates:
+            return content[:max(candidates) + 1].rstrip() + "..."
+        return content[:max_chars].rstrip() + "..."
 
     def _extract_key_decisions(self, content: str) -> list[str]:
         """从内容中提取关键决策句。"""
@@ -323,66 +315,78 @@ class ConversationCompactor:
 
     def _save_summaries(self, session_id: str, summaries: list[TurnSummary]) -> None:
         """保存摘要到 DB。"""
-        conn = sqlite3.connect(self.db_path)
-        for s in summaries:
-            conn.execute(
-                "INSERT OR REPLACE INTO turn_summaries "
-                "(session_id, turn_index, turn_type, summary, tokens_before, "
-                "tokens_after, tool_calls, key_decisions, timestamp, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    session_id, s.turn_index, s.turn_type, s.summary,
-                    s.tokens_before, s.tokens_after,
-                    json.dumps(s.tool_calls, ensure_ascii=False),
-                    json.dumps(s.key_decisions, ensure_ascii=False),
-                    s.timestamp, datetime.now().isoformat(),
-                ),
-            )
-        conn.commit()
-        conn.close()
+        with contextlib.closing(self._get_conn()) as conn:
+            for s in summaries:
+                conn.execute(
+                    "INSERT OR REPLACE INTO turn_summaries "
+                    "(session_id, turn_index, turn_type, summary, tokens_before, "
+                    "tokens_after, tool_calls, key_decisions, timestamp, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        session_id, s.turn_index, s.turn_type, s.summary,
+                        s.tokens_before, s.tokens_after,
+                        json.dumps(s.tool_calls, ensure_ascii=False),
+                        json.dumps(s.key_decisions, ensure_ascii=False),
+                        s.timestamp, datetime.now().isoformat(),
+                    ),
+                )
+            conn.commit()
 
     def _load_summaries(self, session_id: str) -> list[TurnSummary]:
         """从 DB 加载摘要。"""
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT turn_index, turn_type, summary, tokens_before, tokens_after, "
-            "tool_calls, key_decisions, timestamp FROM turn_summaries "
-            "WHERE session_id = ? ORDER BY turn_index",
-            (session_id,)
-        ).fetchall()
-        conn.close()
+        with contextlib.closing(self._get_conn()) as conn:
+            rows = conn.execute(
+                "SELECT turn_index, turn_type, summary, tokens_before, tokens_after, "
+                "tool_calls, key_decisions, timestamp FROM turn_summaries "
+                "WHERE session_id = ? ORDER BY turn_index",
+                (session_id,)
+            ).fetchall()
 
         summaries = []
         for r in rows:
+            try:
+                tool_calls = json.loads(r[5]) if r[5] else []
+            except (json.JSONDecodeError, TypeError):
+                tool_calls = []
+            try:
+                key_decisions = json.loads(r[6]) if r[6] else []
+            except (json.JSONDecodeError, TypeError):
+                key_decisions = []
+
             summaries.append(TurnSummary(
                 turn_index=r[0],
                 turn_type=r[1],
                 summary=r[2],
                 tokens_before=r[3],
                 tokens_after=r[4],
-                tool_calls=json.loads(r[5]) if r[5] else [],
-                key_decisions=json.loads(r[6]) if r[6] else [],
+                tool_calls=tool_calls,
+                key_decisions=key_decisions,
                 timestamp=r[7],
             ))
         return summaries
 
     def _save_compacted_context(
-        self, session_id: str, original: int, compacted: int,
-        tokens_before: int, tokens_after: int, data: dict,
+        self,
+        *,
+        session_id: str,
+        original: int,
+        compacted: int,
+        tokens_before: int,
+        tokens_after: int,
+        data: dict,
     ) -> None:
-        """保存 compacted context 元数据。"""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "INSERT INTO compacted_contexts "
-            "(session_id, original_turns, compacted_turns, "
-            "total_tokens_before, total_tokens_after, context_data, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                session_id, original, compacted,
-                tokens_before, tokens_after,
-                json.dumps(data, ensure_ascii=False),
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.commit()
-        conn.close()
+        """保存 compacted context 元数据（仅限关键字参数调用）。"""
+        with contextlib.closing(self._get_conn()) as conn:
+            conn.execute(
+                "INSERT INTO compacted_contexts "
+                "(session_id, original_turns, compacted_turns, "
+                "total_tokens_before, total_tokens_after, context_data, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id, original, compacted,
+                    tokens_before, tokens_after,
+                    json.dumps(data, ensure_ascii=False),
+                    datetime.now().isoformat(),
+                ),
+            )
+            conn.commit()

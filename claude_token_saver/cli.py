@@ -27,7 +27,7 @@ from claude_token_saver.agents import _AGENT_CHOICES, resolve_adapter
 
 
 def setup_auto() -> None:
-    """一键安装（独立入口: cts-setup 命令）。"""
+    """一键安装（独立入口: ats-setup 命令）。"""
     from claude_token_saver.daemon import start_daemon
 
     click.echo(click.style("🔍 检测环境...", bold=True))
