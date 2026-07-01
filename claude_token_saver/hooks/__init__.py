@@ -138,12 +138,15 @@ def _merge_hooks_lists(base_list: list, overlay_list: list) -> list:
     return list(existing.values())
 
 
-def install_hooks() -> str:
+def install_hooks(dry_run: bool = False) -> str:
     """将 hook 配置合并写入 .claude/settings.local.json。"""
     settings_local_path = Path.home() / ".claude" / "settings.local.json"
     settings_local_path.parent.mkdir(parents=True, exist_ok=True)
 
     hook_config = generate_hook_config()
+
+    if dry_run:
+        return str(settings_local_path)
 
     if settings_local_path.exists():
         try:

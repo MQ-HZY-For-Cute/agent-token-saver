@@ -990,7 +990,7 @@ def start_daemon(
                 "close_fds": True,
             }
             if sys.platform == "win32":
-                kwargs["creation_flags"] = subprocess.DETACHED_PROCESS
+                kwargs["creationflags"] = subprocess.DETACHED_PROCESS
             else:
                 kwargs["start_new_session"] = True
 
