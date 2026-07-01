@@ -21,6 +21,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 
 from claude_token_saver.utils import count_tokens, get_file_size
 
@@ -167,7 +168,7 @@ def _get_file_content_hash(file_path: str) -> str | None:
         # newline=None 启用 universal newlines 模式，自动将 \r\n → \n
         with open(file_path, "r", encoding="utf-8", errors="replace", newline=None) as f:
             content = f.read()
-        return hashlib.md5(content.encode()).hexdigest()
+        return hashlib.sha256(content.encode()).hexdigest()
     except Exception:
         return None
 
@@ -202,7 +203,7 @@ def _update_read_cache(file_path: str, content: str) -> None:
     """更新 Read 缓存。"""
     import os
     try:
-        content_hash = hashlib.md5(content.encode()).hexdigest()
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
         tokens = count_tokens(content)
         mtime = os.path.getmtime(file_path)
         _READ_CACHE[file_path] = (content_hash, tokens, mtime)

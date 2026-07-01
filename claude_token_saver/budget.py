@@ -6,10 +6,10 @@ Agent Token Saver - 自适应预算分配器
 
 策略：
   - 按文件 token 大小从大到小排序
-  - 大文件（>预算 30%）→ skeleton
-  - 中文件（>预算 10%）→ stripped
+  - 超大文件（>预算 50%）→ skeleton（若超总预算则 block）
+  - 大文件（>预算 15%）→ skeleton
+  - 中文件（>预算 5%）→ stripped
   - 小文件 → full
-  - 超过总预算的文件直接跳过
 """
 from __future__ import annotations
 
