@@ -1,0 +1,7 @@
+// npm 配置文件 / npm config file
+// GitHub Packages 需要认证令牌 / GitHub Packages requires auth token
+// 获取令牌：https://github.com/settings/tokens (scopes: write:packages, read:packages)
+// Get token: https://github.com/settings/tokens (scopes: write:packages, read:packages)
+
+@MQ-HZY-For-Cute:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN_HERE

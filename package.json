@@ -1,5 +1,5 @@
 {
-  "name": "agent-token-saver",
+  "name": "@MQ-HZY-For-Cute/agent-token-saver",
   "version": "0.2.0",
   "description": "AI Coding Agent Token Saver - reduce token consumption across Claude Code, Codex, Cursor, Aider and more",
   "keywords": [

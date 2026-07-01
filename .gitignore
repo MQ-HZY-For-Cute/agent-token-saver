@@ -12,3 +12,4 @@ daemon.log
 *.sqlite
 *.log
 .pytest_cache/
+.npmrc
